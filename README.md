@@ -10,7 +10,9 @@ Open http://127.0.0.1:8766. The server serves only the workspace assets and the 
 
 ## Connect models
 
-Set `GROQ_API_KEY`, `OPENROUTER_API_KEY`, or both in the server environment. Alternatively, put the variables in a private environment file outside the web directory and launch with `node --env-file=/absolute/path/to/private.env server.mjs`. Restart after changing credentials. Use **Connections → Refresh catalog** to check the configuration. The previous browser-stored Groq key is no longer used. Clear that site's local storage if you previously chose “Remember on this device.”
+Select **Add API key**, choose Groq or OpenRouter, then paste your key or upload a plain-text file containing it. Click **Connect**. Personal keys stay in tab memory and requests go directly to the chosen provider.
+
+For a shared server credential, set `GROQ_API_KEY`, `OPENROUTER_API_KEY`, or both in the server environment. Alternatively, put the variables in a private environment file outside the web directory and launch with `node --env-file=/absolute/path/to/private.env server.mjs`. Restart after changing credentials. Use **Add API key → Refresh catalog** to check the configuration. The previous browser-stored Groq key is no longer used. Clear that site's local storage if you previously chose “Remember on this device.”
 
 OpenRouter supplies multiple model families through its live catalog. A catalog listing does not guarantee account entitlement, region availability, credit balance or upstream capacity. Manual IDs are sent to the selected gateway. Parameters and context limits vary by model. Search, generation, and comparison send the selected conversation context to their respective services. Comparing three models makes three separately billable calls.
 

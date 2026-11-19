@@ -112,12 +112,66 @@ function catalogPanel(){
     }}
   query.oninput=family.onchange=draw;draw();
 }
+// Personal credentials stay in memory and are sent only to the selected provider.
+const endpoints={groq:'https://api.groq.com/openai/v1',openrouter:'https://openrouter.ai/api/v1'};
+const personal=new Map();
+let serverModels=[],serverRoutes=[],keyAttempt=0;
+function updateConnections(){
+  catalog=[...serverModels.filter(m=>!personal.has(m.route)),...[...personal.values()].flatMap(c=>c.models)];
+  connected=[...new Set([...serverRoutes,...personal.keys()])];
+  modelStatus();
+}
+function keyMessage(message){$('keyNotice').textContent=message}
+function resetKeyForm(){
+  keyAttempt++;$('personalKey').value='';$('keyFile').value='';
+  keyMessage(personal.has($('keyRoute').value)?'A key is connected for this tab.':'');
+  $('useKey').disabled=false;
+}
+$('connect').onclick=()=>{$('keyRoute').value=$('route').value;resetKeyForm();$('keys').showModal()};
+$('keys').onclose=resetKeyForm;
+$('keyRoute').onchange=resetKeyForm;
+$('keyFile').onchange=async()=>{
+  const attempt=++keyAttempt,file=$('keyFile').files[0];
+  $('useKey').disabled=false;
+  if(!file)return;
+  $('personalKey').value='';
+  try{
+    if(file.size>1024)throw Error('Choose a small text file containing one key.');
+    const value=(await file.text()).trim();
+    if(attempt!==keyAttempt)return;
+    if(!/^[!-~]{8,512}$/.test(value))throw Error('The file must contain a single API key.');
+    $('personalKey').value=value;keyMessage('File loaded. Select Connect to use this key.');
+  }catch(e){if(attempt===keyAttempt)keyMessage(e.message)}
+  finally{if(attempt===keyAttempt)$('keyFile').value=''}
+};
+$('forgetKey').onclick=()=>{personal.delete($('keyRoute').value);resetKeyForm();updateConnections();keyMessage('Tab key removed.')};
+$('keyForm').onsubmit=async event=>{
+  event.preventDefault();
+  const route=$('keyRoute').value, token=$('personalKey').value.trim(),attempt=++keyAttempt;
+  if(!/^[!-~]{8,512}$/.test(token)){keyMessage('Enter one valid API key.');return}
+  if((token.startsWith('gsk_')&&route!=='groq')||(token.startsWith('sk-or-')&&route!=='openrouter')){keyMessage('Select the provider that issued this key.');return}
+  $('useKey').disabled=true;keyMessage('Checking key…');
+  const get=path=>fetch(endpoints[route]+path,{headers:{Authorization:'Bearer '+token},credentials:'omit',redirect:'error',cache:'no-store',signal:AbortSignal.timeout(15000)});
+  try{
+    if(route==='openrouter'){const auth=await get('/key');if(!auth.ok)throw Error('Key check failed (HTTP '+auth.status+').')}
+    const response=await get('/models');if(!response.ok)throw Error('Key check failed (HTTP '+response.status+').');
+    const {data}=await response.json();
+    const models=data.filter(m=>m.active!==false&&typeof m.id==='string'&&(route==='groq'?!/whisper|tts|guard|orpheus|embed|moderation/i.test(m.id):m.architecture?.input_modalities?.includes('text')&&m.architecture?.output_modalities?.includes('text')))
+      .map(m=>({route,id:m.id,name:m.name||m.id,family:m.id.split('/')[0],description:m.description||'Groq chat model',params:m.supported_parameters||[],inputs:m.architecture?.input_modalities||[],ready:true}));
+    if(!models.length)throw Error('No chat models were returned.');
+    if(attempt!==keyAttempt)return;
+    personal.set(route,{token,models});$('route').value=route;
+    if(!models.some(m=>m.id===$('model').value))$('model').value=models[0].id;
+    updateConnections();$('personalKey').value='';keyMessage('Connected. Your key is ready to use.');say('Connected to '+route+'.');
+  }catch(e){if(attempt===keyAttempt)keyMessage(e instanceof TypeError?'Could not reach the provider. Check your connection.':e.message)}
+  finally{if(attempt===keyAttempt)$('useKey').disabled=false}
+};
 async function discover(){
   if(loading)return;loading=true;$('connectionState').textContent='Retrieving provider catalogs…';
   try{const r=await fetch('/api/workspace');if(!r.ok)throw Error('Gateway HTTP '+r.status);
-    const data=await r.json();catalog=data.models;connected=data.connected;
-    $('connectionState').textContent=(connected.length?'Configured: '+connected.join(', '):'No server keys configured. Public models can be browsed.')+' · '+catalog.length+' models. '+data.errors.join(' ');
-  }catch{ $('connectionState').textContent='Start the Brain Trust Node server to access provider catalogs and generation.'}
+    const data=await r.json();serverModels=data.models;serverRoutes=data.connected;updateConnections();
+    $('connectionState').textContent=(connected.length?'Configured: '+connected.join(', '):'Public catalog available. Connect a key above to generate.')+' · '+catalog.length+' models. '+data.errors.join(' ');
+  }catch{ $('connectionState').textContent='Server catalog unavailable. You can still connect a personal key above.'}
   finally{loading=false;modelStatus()}
 }
 $('refreshCatalog').onclick=discover;
@@ -194,7 +248,11 @@ async function complete(model,config,list,signal,onText){
   const payload=modelConfig(model,config,config.stream),start=performance.now();
   const metric={model:identity(model),at:Date.now(),outcome:'Failed'};
   try{
-    const response=await fetch('/api/workspace?route='+encodeURIComponent(model.route),{method:'POST',headers:{'Content-Type':'application/json'},signal,body:JSON.stringify({...payload,messages:list})});
+    const credential=personal.get(model.route);
+    const url=credential?endpoints[model.route]+'/chat/completions':'/api/workspace?route='+encodeURIComponent(model.route);
+    const headers={'Content-Type':'application/json'};
+    if(credential)headers.Authorization='Bearer '+credential.token;
+    const response=await fetch(url,{method:'POST',headers,signal,redirect:'error',credentials:credential?'omit':'same-origin',body:JSON.stringify({...payload,messages:list})});
     if(!response.ok){const error=await response.json().catch(()=>null);throw Error((error?.error?.message||response.statusText)+' (HTTP '+response.status+')')}
     let content='',finish='',usage;
     if(response.headers.get('content-type')?.includes('text/event-stream')){
@@ -214,7 +272,7 @@ async function complete(model,config,list,signal,onText){
   finally{metric.ms=performance.now()-start;library.metrics.push(metric);store()}
 }
 function selectedModel(){return currentModel()||{id:$('model').value.trim(),name:$('model').value.trim(),route:$('route').value,params:[]}}
-function checkConnection(models){for(const m of models){if(!connected.includes(m.route))throw Error('Configure '+(m.route==='groq'?'GROQ_API_KEY':'OPENROUTER_API_KEY')+' on the server. See Connections for setup.')}}
+function checkConnection(models){for(const m of models){if(!connected.includes(m.route))throw Error('Select Add API key and connect your '+m.route+' key.')}}
 function validConversation(list){if(!list.some(m=>m.role==='user'&&m.content.trim()))throw Error('Add a user prompt first.');if(list.some(m=>!m.content.trim()))throw Error('Fill or delete the empty message.')}
 async function generate(retry=false){
   if(active||testing)return;
